@@ -1,0 +1,116 @@
+---
+title: "Job hunt in Germany - featuring Python, R, and SQL"
+subtitle: "Reporting with Quarto"
+author: "Nico Blokker"
+date: today
+date-format: "DD-MM-YYYY"
+format: html
+editor: source
+embed-resources: true
+toc: true
+execute:
+   enabled: true
+---
+
+---
+
+```{r, echo=F, warning=F, message=F}
+library(reticulate)
+```
+
+
+*Load, manipulate, and visualize [open positions](https://www.arbeitsagentur.de/jobsuche/) in Berlin.*
+
+```{mermaid}
+%%{init: {"flowchart": {"htmlLabels": false}} }%%
+flowchart LR
+  subgraph Process
+     A 
+     B(Manipulate data in SQL) --> C[Visualize in R] 
+  end
+  A[Call API in Python] --> Z[(Setup DB in R)]
+  Z[(Setup DB in R)] --> B(Manipulate data in SQL)
+  
+  classDef white fill: #fff
+  class Process white
+```
+
+## Download data using Python
+
+- search for positions including 'data'
+
+```{python, echo = F, include = F}
+with open("key.txt", "r") as file:
+    key = file.read()
+```
+
+
+```{python, filename="python"}
+import requests
+import pandas as pd
+
+# build query-url
+where = 'Berlin'; what = 'data'
+url = 'https://rest.arbeitsagentur.de/jobboerse/jobsuche-service/pc/v4/jobs?'
+query = f'{url}&was={what}&wo={where}&veroeffentlichtseit=30&size=100&'
+
+# make & parse query
+result = requests.get(query, headers = {'X-API-Key' : key}) # key from official documentation
+offers = pd.DataFrame(result.json()["stellenangebote"])
+
+# unnest list columns & merge
+locations = offers['arbeitsort'].apply(pd.Series) 
+coords = locations['koordinaten'].apply(pd.Series)  
+offers_wide = pd.concat([offers, locations, coords], axis = 1) 
+
+# subset
+offers_wide_subset = offers_wide[['titel', 'arbeitgeber', 'ort', 'lat', 'lon']]
+```
+
+The query yields *`r py$offers_wide_subset |> nrow()`* open positions, which are written to the database and subsequently filtered.
+
+## Mimic SQL database using R
+
+```{r, filename = "R"}
+library(reticulate)
+library(DBI)
+con <- dbConnect(RSQLite::SQLite(), dbname = ":memory:")
+dbWriteTable(con, "jobs", py$offers_wide_subset)
+```
+
+## Subset data using SQL
+
+```{sql, connection=con, output.var = "table_jobs", filename = "SQL"}
+SELECT * FROM jobs
+WHERE titel LIKE '%Analyst%' OR titel LIKE '%Business%';
+```
+
+- output limited to the following
+
+```{sql, connection=con, echo = F}
+SELECT * FROM jobs
+WHERE titel LIKE '%Analyst%' OR titel LIKE '%Business%'
+LIMIT 3;
+```
+
+
+## Visualize locations using R
+
+- the outputted table is handed over to R as `table_jobs` 
+
+```{r, warning=F, filename = "R"}
+library(leaflet)
+leaflet() %>%
+  addTiles() %>%
+  addMarkers(lat = table_jobs$lat, lng = table_jobs$lon, label = table_jobs$titel)
+```
+
+## References
+
+- https://jobsuche.api.bund.dev/
+- https://github.com/bundesAPI/jobsuche-api
+- https://medium.com/@skyetetra/pretending-to-have-a-sql-database-with-rstudio-e80d9a1338b1
+- https://lazyanalyst.medium.com/sql-in-r-markdown-2ceffeb7df4
+- https://chat.openai.com/
+- https://campus.datacamp.com/courses/building-dashboards-with-flexdashboard/data-visualization-for-dashboards?ex=10
+- https://github.com/mermaid-js/mermaid/issues/391
